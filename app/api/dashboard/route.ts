@@ -1,20 +1,44 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../lib/supabaseClient";
+import { getServerSession } from "next-auth";
+import { authOptions } from "../auth/[...nextauth]/route";
 
-// GET: Retrieve dashboard data (streaks and user progress) for the given userId.
-export async function GET(
-  request: Request,
-  { params }: { params: { userId: string } }
-) {
-  const { userId } = params;
+// Helper function to authenticate users
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+async function authenticateUser(_request: Request)
+ {
+  const session = await getServerSession(authOptions);
+  if (!session || !session.user?.email) {
+    return null;
+  }
 
-  // Fetch streak data for the user from the "streaks" table.
+  // Fetch user from Supabase using email
+  const { data: user, error } = await supabase
+    .from("users")
+    .select("id")
+    .eq("email", session.user.email)
+    .single();
+
+  if (error || !user) {
+    return null;
+  }
+
+  return user.id; // Return authenticated user ID
+}
+
+// GET: Retrieve dashboard data (streaks and user progress) for the authenticated user
+export async function GET(request: Request) {
+  const userId = await authenticateUser(request);
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Fetch streaks and progress for the authenticated user
   const { data: streaks, error: streakError } = await supabase
     .from("streaks")
     .select("*")
     .eq("user_id", userId);
 
-  // Fetch user progress from the "user_progress" table.
   const { data: progress, error: progressError } = await supabase
     .from("user_progress")
     .select("*")
@@ -30,33 +54,29 @@ export async function GET(
   return NextResponse.json({ streaks, progress });
 }
 
-// POST: Update or insert a user progress record for the given userId.
-// Expected JSON payload:
-// {
-//    "problem_id": "uuid-of-problem",
-//    "is_correct": true   // or false
-// }
-export async function POST(
-  request: Request,
-  { params }: { params: { userId: string } }
-) {
+// POST: Update or insert a user progress record for the authenticated user
+export async function POST(request: Request) {
   try {
+    const userId = await authenticateUser(request);
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const body = await request.json();
     const { problem_id, is_correct } = body;
+
     if (!problem_id || typeof is_correct !== "boolean") {
       return NextResponse.json({ error: "Invalid input" }, { status: 400 });
     }
 
-    // Insert or update the progress record.
-    // The upsert uses the UNIQUE constraint on (user_id, problem_id) to prevent duplicates.
+    // Upsert the progress record for the authenticated user
     const { data, error } = await supabase
       .from("user_progress")
       .upsert(
         {
-          user_id: params.userId,
+          user_id: userId, // Use authenticated user ID
           problem_id,
           is_correct,
-          // solved_at defaults to now()
         },
         { onConflict: "user_id,problem_id" }
       )
